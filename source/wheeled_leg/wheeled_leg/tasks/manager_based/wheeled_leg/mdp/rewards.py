@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils.math import wrap_to_pi
+from isaaclab.utils.math import combine_frame_transforms, wrap_to_pi
 from isaaclab.sensors import ContactSensor
 
 if TYPE_CHECKING:
@@ -78,25 +78,65 @@ def energy(env, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Te
     return reward
 
 
+def base_tilt_l2(env, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize base roll/pitch by using the lateral components of projected gravity."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+
+
+def mirrored_joint_deviation_l1(
+    env: ManagerBasedRLEnv,
+    left_asset_cfg: SceneEntityCfg,
+    right_asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize deviation from mirrored left/right leg configurations."""
+    asset: Articulation = env.scene[left_asset_cfg.name]
+    left_joint_pos = wrap_to_pi(asset.data.joint_pos[:, left_asset_cfg.joint_ids])
+    right_joint_pos = wrap_to_pi(asset.data.joint_pos[:, right_asset_cfg.joint_ids])
+    return torch.sum(torch.abs(left_joint_pos + right_joint_pos), dim=1)
+
+
+def joint_vel_l2_selected(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize the squared velocity of a selected joint subset."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    return torch.sum(torch.square(joint_vel), dim=1)
+
+
 def track_ee_pose_exp(
     env: ManagerBasedRLEnv, 
     std: float, 
     command_name: str, 
     asset_cfg: SceneEntityCfg
 ) -> torch.Tensor:
-    """奖励夹爪追踪目标位置，使用指数核函数。"""
-    # 1. 获取机器人资产（这里 asset_cfg 应该指定 body_names=["Claw"]）
+    """Reward end-effector position tracking for base-frame pose commands."""
     asset: Articulation = env.scene[asset_cfg.name]
-    
-    # 2. 获取夹爪在世界坐标系下的当前位置
-    # asset_cfg.body_ids 会根据你在 RewardsCfg 中定义的 body_names 自动映射
-    ee_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids[0], :]
-    
-    # 3. 获取目标点的世界坐标
-    target_pos_w = env.command_manager.get_command(command_name)[:, :3]
-    
-    # 4. 计算欧氏距离的平方
+    command = env.command_manager.get_command(command_name)
+    target_pos_b = command[:, :3]
+    target_pos_w, _ = combine_frame_transforms(
+        asset.data.root_state_w[:, :3], asset.data.root_state_w[:, 3:7], target_pos_b
+    )
+    ee_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3]
     distance_squared = torch.sum(torch.square(target_pos_w - ee_pos_w), dim=1)
-    
-    # 5. 返回指数奖励: exp(-d^2 / std^2)
     return torch.exp(-distance_squared / std**2)
+
+
+def track_ee_position_tanh(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward end-effector position tracking using a smoother tanh kernel."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    target_pos_b = command[:, :3]
+    target_pos_w, _ = combine_frame_transforms(
+        asset.data.root_state_w[:, :3], asset.data.root_state_w[:, 3:7], target_pos_b
+    )
+    ee_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3]
+    distance = torch.norm(target_pos_w - ee_pos_w, dim=1)
+    return 1 - torch.tanh(distance / std)

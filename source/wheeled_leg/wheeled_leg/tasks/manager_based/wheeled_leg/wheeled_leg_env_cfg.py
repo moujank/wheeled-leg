@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 from __future__ import annotations
-
+'''
 import sys
 import os
 
@@ -28,7 +28,7 @@ enable_extension("isaacsim.ros2_bridge_wheeled")
 # 现在你可以安全地 import rclpy 或其他 ROS2 相关的包了
 import rclpy
 from rclpy.node import Node
-
+'''
 import math
 
 import isaaclab.sim as sim_utils

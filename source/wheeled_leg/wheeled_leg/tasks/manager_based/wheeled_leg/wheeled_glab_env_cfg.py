@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 from __future__ import annotations
+'''
 from isaacsim import SimulationApp
 
 # 启动仿真应用
@@ -17,7 +18,7 @@ enable_extension("isaacsim.ros2_bridge_wheeled")
 # 现在你可以安全地 import rclpy 或其他 ROS2 相关的包了
 import rclpy
 from rclpy.node import Node
-
+'''
 import math
 
 import isaaclab.sim as sim_utils
@@ -30,7 +31,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
@@ -38,7 +39,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 
 from .asset.wheeled import WHEELED_CFG  
 from .asset.wheeled_arm import WHEELED_ARM_CFG
-from .terrains.terrains import GRAVEL_TERRAINS_CFG, ROUGH_TERRAINS_CFG
+from .terrains.terrains import ROUGH_TERRAINS_CFG
 
 from . import mdp
 
@@ -52,8 +53,8 @@ class WheeledGlabSceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/terrain",
         terrain_type="generator",
-        terrain_generator=GRAVEL_TERRAINS_CFG,
-        max_init_terrain_level=5,
+        terrain_generator=ROUGH_TERRAINS_CFG,
+        max_init_terrain_level=0,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -108,33 +109,32 @@ class CommandsCfg:
 
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0, 15.0),
-        rel_standing_envs=0.02,
-        rel_heading_envs=1.0,
-        heading_command=True,
+        resampling_time_range=(8.0, 12.0),
+        rel_standing_envs=0.10,
+        rel_heading_envs=0.0,
+        heading_command=False,
         heading_control_stiffness=0.5,
         debug_vis=False,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 0.5), 
+            lin_vel_x=(0.0, 0.6), 
             lin_vel_y=(0.0, 0.0), 
-            ang_vel_z=(-1.0, 1.0), 
-            heading=(-math.pi, math.pi)
+            ang_vel_z=(-0.3, 0.3), 
+            heading=(0.0, 0.0)
         )
     )
 
     ee_pose = mdp.UniformPoseCommandCfg(
         asset_name="robot",
         body_name="claw_Link",
-        resampling_time_range=(10.0, 15.0),
+        resampling_time_range=(4.0, 6.0),
         debug_vis=True,
-        # 目标点在机器人周围的随机范围
         ranges=mdp.UniformPoseCommandCfg.Ranges(
-            pos_x=(0.5, 0.5), 
-            pos_y=(-0.1, 0.1), 
-            pos_z=(0.3, 0.3),
-            roll=(0.0, 0.0),   # 即使不需要旋转，也要给一个范围（例如从0到0）
-            pitch=(0.0, 0.0),
-            yaw=(0.0, 0.0),
+            pos_x=(0.32, 0.55), 
+            pos_y=(-0.12, 0.12), 
+            pos_z=(0.16, 0.34),
+            roll=(0.0, 0.0),
+            pitch=(math.pi * 0.5, math.pi * 0.5),
+            yaw=(-0.25, 0.25),
         ),
         
     )
@@ -158,7 +158,7 @@ class ActionsCfg:
     joint_pos_arm = mdp.JointPositionActionCfg(
         asset_name="robot", 
         joint_names=["Arm.*", "Claw"], 
-        scale=1.0, 
+        scale=0.30, 
         use_default_offset=True
     )
 
@@ -174,6 +174,10 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel, 
             noise=Unoise(n_min=-0.2, n_max=0.2)
+        )
+        base_lin_vel = ObsTerm(
+            func=mdp.base_lin_vel,
+            noise=Unoise(n_min=-0.1, n_max=0.1),
         )
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
@@ -194,15 +198,16 @@ class ObservationsCfg:
         actions = ObsTerm(
             func=mdp.last_action
         )
-        # 1. 夹爪相对于目标点的位姿
         ee_position_to_target = ObsTerm(
-            func=mdp.object_position_in_robot_frame, # 需要在mdp中引用对应的计算函数
+            func=mdp.ee_position_error_in_robot_frame,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["claw_Link"]), "command_name": "ee_pose"}
-        )    # --- 核心任务奖励 (Task Rewards) ---
+        )
 
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
+            self.history_length = 3
+            self.flatten_history_dim = True
         
     @configclass
     class CriticCfg(ObsGroup):  
@@ -245,7 +250,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
-            "mass_distribution_params": (-3.0, 5.0),
+            "mass_distribution_params": (0.0, 2.0),
             "operation": "add",
         },
     )
@@ -265,14 +270,14 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+            "pose_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2), "yaw": (-0.5, 0.5)},
             "velocity_range": {
-                "x": (-0.5, 0.5),
-                "y": (-0.5, 0.5),
-                "z": (-0.5, 0.5),
-                "roll": (-0.5, 0.5),
-                "pitch": (-0.5, 0.5),
-                "yaw": (-0.5, 0.5),
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.1, 0.1),
             },
         },
     )
@@ -281,7 +286,7 @@ class EventCfg:
         func=mdp.reset_joints_by_scale,
         mode="reset",
         params={
-            "position_range": (0.5, 1.5),
+            "position_range": (0.9, 1.1),
             "velocity_range": (0.0, 0.0),
         },
     )
@@ -290,8 +295,8 @@ class EventCfg:
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(10.0, 15.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+        interval_range_s=(18.0, 24.0),
+        params={"velocity_range": {"x": (-0.15, 0.15), "y": (-0.15, 0.15)}},
     )
 
 @configclass
@@ -301,47 +306,60 @@ class RewardsCfg:
     # -- task
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp, 
-        weight=10.0, 
-        params={"command_name": "base_velocity", "std": 0.5}
+        weight=8.0, 
+        params={"command_name": "base_velocity", "std": 0.75}
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp, 
-        weight=0.5, 
-        params={"command_name": "base_velocity", "std": 0.5}
+        weight=1.0, 
+        params={"command_name": "base_velocity", "std": 0.75}
     )
-    # -- penalties
     termination_penalty = RewTerm(
         func=mdp.is_terminated, 
-        weight=-200.0
+        weight=-40.0
     )
     lin_vel_z_l2 = RewTerm(
         func=mdp.lin_vel_z_l2, 
-        weight=-2.0
+        weight=-1.0
     )
     ang_vel_xy_l2 = RewTerm(
         func=mdp.ang_vel_xy_l2, 
-        weight=-0.05
+        weight=-0.15
         )
     energy = RewTerm(
         func=mdp.energy, 
-        weight=-0.2
+        weight=-0.03
     )
     dof_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2, 
-        weight=-2.5e-7
+        weight=-5.0e-7
     )
     action_rate_l2 = RewTerm(
         func=mdp.action_rate_l2, 
-        weight=-0.01
+        weight=-0.015
+    )
+    arm_joint_vel_l2 = RewTerm(
+        func=mdp.joint_vel_l2_selected,
+        weight=-0.01,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["Arm.*", "Claw"])},
     )
     flat_orientation_l2 = RewTerm(
         func=mdp.flat_orientation_l2, 
-        weight=-5.0
+        weight=-3.0
+    )
+    base_tilt_l2 = RewTerm(
+        func=mdp.base_tilt_l2,
+        weight=-4.0,
     )
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-50.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*hip.*", ".*knee.*", ".*arm.*", ".*claw.*"]), "threshold": 1.0},
+        weight=-10.0,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["base_link", ".*hip.*", ".*knee.*", ".*arm.*", ".*claw.*"]
+            ),
+            "threshold": 5.0,
+        },
     )
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits, 
@@ -350,22 +368,33 @@ class RewardsCfg:
     
     joint_deviation_legs = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-5.0,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["Hip.*", "Knee.*"])},
+    )
+    leg_symmetry = RewTerm(
+        func=mdp.mirrored_joint_deviation_l1,
+        weight=-3.0,
+        params={
+            "left_asset_cfg": SceneEntityCfg("robot", joint_names=["HipL", "KneeL"]),
+            "right_asset_cfg": SceneEntityCfg("robot", joint_names=["HipR", "KneeR"]),
+        },
+    )
+    joint_deviation_arms = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.3,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["Arm.*", "Claw"])},
     )
 
     approach_ee_target_exp = RewTerm(
         func=mdp.track_ee_pose_exp, 
-        weight=50.0, 
-        params={"command_name": "ee_pose", "std": 0.1, "asset_cfg": SceneEntityCfg("robot", body_names=["claw_Link"])}
+        weight=40.0, 
+        params={"command_name": "ee_pose", "std": 0.35, "asset_cfg": SceneEntityCfg("robot", body_names=["claw_Link"])}
     )
-    '''
-    target_contact = RewTerm(
-        func=mdp.contact_forces, 
-        weight=10.0, 
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["claw_Link"]), "threshold": 0.1}
+    approach_ee_target_tanh = RewTerm(
+        func=mdp.track_ee_position_tanh,
+        weight=60.0,
+        params={"command_name": "ee_pose", "std": 0.20, "asset_cfg": SceneEntityCfg("robot", body_names=["claw_Link"])},
     )
-    '''
 
 @configclass
 class TerminationsCfg:
@@ -379,7 +408,10 @@ class TerminationsCfg:
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base_link", ".*hip.*", ".*knee.*", ".*arm.*", ".*claw.*"]), "threshold": 1.0
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["base_link", ".*hip.*", ".*knee.*", ".*arm.*", ".*claw.*"]
+            ),
+            "threshold": 5.0,
         },
     )
     
@@ -415,4 +447,4 @@ class WheeledGlabEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
 
         self.scene.contact_forces.update_period = self.sim.dt
-        self.scene.terrain.terrain_generator.curriculum = False
+        self.scene.terrain.terrain_generator.curriculum = True
